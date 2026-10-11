@@ -1,0 +1,35 @@
+# 开放词汇 / 零样本检测配置（scripts/train_openvocab.py 默认读取本文件）
+# 用途：新增病害类别时**不用重新标注**，用文本提示先出框（Grounding DINO），
+#       或改词表后微调（YOLO-World）；也可用于给无标注航拍图自动预标注。
+
+method: yoloworld         # yoloworld（词表微调）| grounding-dino（零样本）
+
+data:
+  root: data/processed    # YOLO-World 微调用的 COCO 数据根目录
+  imgsz: 640
+  # Grounding DINO 演示/预标注的图片目录
+  images: data/samples/images
+
+model:
+  yoloworld: yolov8s-worldv2.pt             # ultralytics 权重（需 pip install ultralytics）
+  grounding_dino: IDEA-Research/grounding-dino-tiny   # transformers 仓库名或本地目录
+
+prompts:
+  lang: en                # en -> disease_name 去掉下划线；cn -> disease_name_cn
+  # 也可直接写死提示词（覆盖 labels.yaml 自动生成的结果）：
+  # custom: ["rice blast", "wheat powdery mildew", "healthy leaf"]
+
+train:                    # 仅 yoloworld 方法使用
+  epochs: 50
+  batch_size: 4
+  imgsz: 640
+  freeze: 0               # 冻结前 N 层（省显存）
+  device: auto
+  seed: 42
+  lr: 1.0e-4
+
+infer:                    # 仅 grounding-dino 演示/预标注使用
+  box_threshold: 0.3
+  text_threshold: 0.25
+  max_images: 8
+  device: auto

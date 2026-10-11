@@ -1,0 +1,39 @@
+# RT-DETR / RT-DETRv2 检测训练配置（scripts/train_det.py 默认读取本文件）
+# 命令行参数优先级高于本文件；也可用 --set 覆盖任意键，例如：
+#   python -m scripts.train_det --set train.epochs=60 train.batch_size=2
+#
+# 标签体系唯一真源是 configs/labels.yaml（class_id 必须与推理侧严格一致），本文件不重复定义类别。
+
+data:
+  # 数据根目录：应包含 <root>/train/annotations.json 与 <root>/val/annotations.json
+  # 由 `python -m src.data.prepare_data` 生成（COCO 格式）
+  root: data/processed
+  imgsz: 640              # 输入边长（RT-DETR 官方 640；显存紧张可降到 512/480）
+  # 图片额外搜索目录（数据转换默认不复制图片，脚本会自动探测 data/raw、data/samples）
+  image_roots: []
+
+model:
+  variant: v2             # v2 = RT-DETRv2（WACV2025 分层密集正监督，首选）/ v1 = 原始 RT-DETR
+  pretrained: PekingU/rtdetr_v2_r18vd   # 也可填本地目录（离线环境）
+  freeze_backbone: true   # 8GB 显存强烈建议 true（先冻结 backbone 训 decoder/head）
+  peft: none              # none | lora（lora 需要 pip install peft）
+
+train:
+  epochs: 30
+  batch_size: 2           # 8GB 显存建议 2~4
+  grad_accum: 8           # 梯度累积：等效 batch = 2*8 = 16
+  lr: 1.0e-4              # decoder/head 学习率
+  backbone_lr: 1.0e-5     # backbone 学习率（微调时用，比 head 小一个量级）
+  weight_decay: 1.0e-4
+  amp: true               # 混合精度（仅 CUDA 生效）
+  workers: 2
+  seed: 42
+  eval_every: 1           # 每多少轮在 val 上算一次 loss
+  save_best_by: loss      # loss | metric
+  max_steps_per_epoch: 0  # >0 时每轮限制步数（冒烟测试用）
+  max_steps: -1           # --trainer hf 时的总步数上限
+  device: auto            # auto | cpu | cuda
+
+# 训练后端与驱动（也可用 --backend / --trainer 覆盖）
+backend: transformers-rtdetrv2   # transformers-rtdetrv2 | ultralytics-rtdetr | paddle
+trainer: custom                  # custom（自写循环，推荐）| hf（HuggingFace Trainer）
