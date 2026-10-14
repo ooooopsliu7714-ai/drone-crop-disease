@@ -1,0 +1,95 @@
+{
+  "task": "detect",
+  "classes": [
+    {
+      "class_id": 0,
+      "disease_name": "apple_scab",
+      "disease_name_cn": "苹果黑星病"
+    },
+    {
+      "class_id": 1,
+      "disease_name": "citrus_canker",
+      "disease_name_cn": "柑橘溃疡病"
+    },
+    {
+      "class_id": 2,
+      "disease_name": "corn_rust",
+      "disease_name_cn": "玉米锈病"
+    },
+    {
+      "class_id": 3,
+      "disease_name": "corn_smut",
+      "disease_name_cn": "玉米黑粉病"
+    },
+    {
+      "class_id": 4,
+      "disease_name": "grape_downy_mildew",
+      "disease_name_cn": "葡萄霜霉病"
+    },
+    {
+      "class_id": 5,
+      "disease_name": "tomato_early_blight",
+      "disease_name_cn": "番茄早疫病"
+    },
+    {
+      "class_id": 6,
+      "disease_name": "tomato_late_blight",
+      "disease_name_cn": "番茄晚疫病"
+    },
+    {
+      "class_id": 7,
+      "disease_name": "wheat_fusarium_head_blight",
+      "disease_name_cn": "小麦赤霉病"
+    },
+    {
+      "class_id": 8,
+      "disease_name": "wheat_powdery_mildew",
+      "disease_name_cn": "小麦白粉病"
+    },
+    {
+      "class_id": 9,
+      "disease_name": "wheat_stripe_rust",
+      "disease_name_cn": "小麦条锈病"
+    }
+  ],
+  "input": {
+    "name": "images",
+    "size": [
+      768,
+      768
+    ],
+    "layout": "NCHW",
+    "mean": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "std": [
+      255.0,
+      255.0,
+      255.0
+    ],
+    "color": "RGB"
+  },
+  "outputs": {
+    "kind": "detect_detr",
+    "names": [
+      "logits",
+      "pred_boxes"
+    ]
+  },
+  "meta": {
+    "source": "rtdetrv2",
+    "imgsz": 768,
+    "note": "由 scripts/export_onnx.py 生成（task=detect, source=rtdetrv2）",
+    "pretrained": "PekingU/rtdetr_v2_r18vd",
+    "epochs": 40,
+    "conf_threshold": 0.05,
+    "export_device": "cpu",
+    "map50_val": 0.1483,
+    "map50_test": 0.1222,
+    "map50_95_test": 0.064,
+    "metrics_note": "报告应采用 test 指标（0.1222）：val 曾用于调阈值与选型，偏乐观；test 从未参与训练与调参",
+    "eval_split_used_for_tuning": "val"
+  }
+}

@@ -1,0 +1,39 @@
+# 病害分类训练配置（scripts/train_cls.py 默认读取本文件）
+# 路线：DINOv2 / DINOv3 自监督特征 + 线性探测（数据少）或 LoRA（数据多）。
+# 命令行参数优先级高于本文件；也可用 --set 覆盖，例如：
+#   python -m scripts.train_cls --set model.backbone=facebook/dinov2-large train.epochs=30
+
+data:
+  root: data/processed     # 含 train/val/annotations.json
+  image_size: 224         # DINOv2 官方预训练分辨率
+  crop_margin: 0.1        # 从检测框裁 patch 时的外扩比例（缓解病斑贴边）
+  max_samples_per_class: 0  # >0 时每类截断到该数量，控制训练时长
+  exclude_classes: []     # 例如 [0] 表示排除 healthy，做纯病害分类
+  image_roots: []
+
+model:
+  # 可选：facebook/dinov2-small、facebook/dinov2-base、facebook/dinov2-large、
+  #       facebook/dinov3-vitb16-pretrain-lvd1689m（DINOv3，需较新 transformers）
+  # 也可以是本地目录（离线环境）
+  backbone: facebook/dinov2-base
+  pooling: cls            # cls = CLS token；mean = patch 特征平均
+  dropout: 0.1
+  peft: none              # none | lora（lora 需要 pip install peft）
+  lora_r: 8
+  lora_alpha: 16
+
+train:
+  epochs: 10
+  batch_size: 16
+  lr: 1.0e-3              # 分类头学习率（线性探测）
+  backbone_lr: 1.0e-5     # backbone 学习率（LoRA/全量微调时用）
+  weight_decay: 0.05
+  grad_accum: 1
+  amp: true               # 仅 CUDA 生效
+  workers: 2
+  seed: 42
+  class_weight: true      # 按类别频率加权交叉熵（缓解长尾）
+  freeze_backbone: true   # 小样本推荐 true
+  unfreeze: false         # true = 全量微调（显存占用大）
+  max_steps_per_epoch: 0
+  device: auto

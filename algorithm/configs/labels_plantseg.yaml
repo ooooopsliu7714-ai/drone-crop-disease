@@ -1,0 +1,98 @@
+# 标签体系：PlantSeg 病种级数据集（10 类具体病害）
+#
+# 数据来源：PlantSeg（in-the-wild 植物病害分割数据集）
+#   原始：7774 图 / 34 作物 / 115 个作物-病害组合
+#   本体系：从中精选 10 类**样本充足（>=100 张）且作物多样**的病害
+#
+# ⚠️ 划分说明（重要）：PlantSeg **官方划分有跨划分重复** —— 实测 316 个源 URL
+#    跨划分（涉及 1556 张图 = 20.0%），抽 50 对做像素验证，MAE 中位 0.90
+#    （即同一张照片）。因此本数据集**按源 URL 重新划分**，泄漏降到 2.5%。
+#    生成脚本：scripts/prepare_plantseg.py
+#
+# 用哪套标签由环境变量 ALGO_LABELS_FILE 决定，**不需要改代码**：
+#   $env:ALGO_LABELS_FILE = "configs/labels_plantseg.yaml"   # 本体系（10 类病种）
+#   $env:ALGO_LABELS_FILE = "configs/labels_stress2.yaml"    # 2 类胁迫（旧）
+#
+# class_id 必须与 data/processed_plantseg/*/annotations.json 的 categories 顺序一致。
+# 该顺序由 prepare_plantseg.py 用 sorted() 生成，请勿手工调整。
+
+version: 1
+
+severity_levels:
+  - key: healthy
+    key_cn: 健康
+    severity_index: 0
+  - key: light
+    key_cn: 轻度
+    severity_index: 1
+  - key: moderate
+    key_cn: 中度
+    severity_index: 2
+  - key: severe
+    key_cn: 重度
+    severity_index: 3
+
+classes:
+  - class_id: 0
+    disease_name: apple_scab
+    disease_name_cn: 苹果黑星病
+    crop: apple
+    is_disease: true
+  - class_id: 1
+    disease_name: citrus_canker
+    disease_name_cn: 柑橘溃疡病
+    crop: citrus
+    is_disease: true
+  - class_id: 2
+    disease_name: corn_rust
+    disease_name_cn: 玉米锈病
+    crop: corn
+    is_disease: true
+  - class_id: 3
+    disease_name: corn_smut
+    disease_name_cn: 玉米黑粉病
+    crop: corn
+    is_disease: true
+  - class_id: 4
+    disease_name: grape_downy_mildew
+    disease_name_cn: 葡萄霜霉病
+    crop: grape
+    is_disease: true
+  - class_id: 5
+    disease_name: tomato_early_blight
+    disease_name_cn: 番茄早疫病
+    crop: tomato
+    is_disease: true
+  - class_id: 6
+    disease_name: tomato_late_blight
+    disease_name_cn: 番茄晚疫病
+    crop: tomato
+    is_disease: true
+  - class_id: 7
+    disease_name: wheat_fusarium_head_blight
+    disease_name_cn: 小麦赤霉病
+    crop: wheat
+    is_disease: true
+  - class_id: 8
+    disease_name: wheat_powdery_mildew
+    disease_name_cn: 小麦白粉病
+    crop: wheat
+    is_disease: true
+  - class_id: 9
+    disease_name: wheat_stripe_rust
+    disease_name_cn: 小麦条锈病
+    crop: wheat
+    is_disease: true
+
+# ---------------------------------------------------------------------------
+# 说明：没有 healthy 类
+# ---------------------------------------------------------------------------
+# PlantSeg 的标注只覆盖"病斑区域"，没有"健康植株"这一类。
+# 这是**正常的检测任务设定**：模型负责找病斑；一张图里没有检出任何病斑，
+# 服务层就据此返回 healthy（见 src/api/schema.py::top_disease 的空框分支）。
+# 所以 num_classes=10，而接口仍能表达"健康"。
+#
+# ⚠️ 域差异（答辩务必如实说明）：
+#   PlantSeg 是**网页抓取的叶片特写照片**（400~1280 px 宽，非航拍），
+#   与无人机航拍存在明显域差异。本模型能识别**病种**，
+#   但迁移到航拍图上会打折扣 —— 若要用于无人机场景，需用航拍数据再微调。
