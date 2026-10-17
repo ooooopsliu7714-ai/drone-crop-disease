@@ -23,7 +23,7 @@ app.add_middleware(
 )
 
 # 数据库连接配置（注意密码）
-SQLALCHEMY_DATABASE_URL = "mysql+pymysql://root:00337788@localhost:3306/agri_disease_db?charset=utf8mb4"
+SQLALCHEMY_DATABASE_URL = "sqlite:///./agri_disease.db"
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
