@@ -2,6 +2,7 @@ import os
 import shutil
 import uuid
 import json
+import requests
 from datetime import datetime
 from fastapi import FastAPI, File, UploadFile, Depends, Body
 from fastapi.middleware.cors import CORSMiddleware
@@ -243,11 +244,118 @@ def get_notifications(db: Session = Depends(get_db)):
 
 
 # 用户登录
+WECHAT_APPID = "wxcec06bd690fa435f"
+WECHAT_SECRET = "71ba26e79556d84597fbdfcb3af8b393"
+
+
 @app.post("/api/login")
 def login(code: str = Body(..., embed=True), db: Session = Depends(get_db)):
-    role = "expert" if code == "expert" else "farmer"
-    fake_token = f"token_{uuid.uuid4().hex[:8]}"
-    username = "植保站王专家" if role == "expert" else "东区张老汉"
+    if code in ["farmer", "expert"]:
+        role = "expert" if code == "expert" else "farmer"
+        username = "植保站王专家" if role == "expert" else "东区张老汉"
+        return {"code": 200, "message": "ok",
+                "data": {"token": f"token_{uuid.uuid4().hex[:8]}", "role": role, "user_id": 1, "username": username}}
 
-    return {"code": 200, "message": "登录成功",
-            "data": {"token": fake_token, "role": role, "user_id": 1, "username": username}}
+    url = f"https://api.weixin.qq.com/sns/jscode2session?appid={WECHAT_APPID}&secret={WECHAT_SECRET}&js_code={code}&grant_type=authorization_code"
+    try:
+        res = requests.get(url, timeout=5).json()
+        if res.get("errcode"):
+            print("wx err:", res)
+            raise Exception()
+        return {"code": 200, "message": "ok",
+                "data": {"token": f"token_{uuid.uuid4().hex[:8]}", "openid": res.get("openid"),
+                         "session_key": res.get("session_key"), "role": "farmer", "username": "东区张老汉"}}
+    except Exception as e:
+        print("wx fail:", e)
+        return {"code": 200, "message": "ok",
+                "data": {"token": f"token_{uuid.uuid4().hex[:8]}", "openid": "mock_openid",
+                         "session_key": "mock_key", "role": "farmer", "username": "东区张老汉"}}
+
+
+# 验证
+# 发送短信验证码
+@app.post("/api/sms/send")
+def send_sms(phone: str = Body(..., embed=True)):
+    print(f"[模拟发送短信] 手机号: {phone}, 验证码固定为: 123456")
+    return {
+        "code": 200,
+        "message": "验证码已发送（演示模拟，请输入123456）",
+        "data": {"sms_code": "123456"}
+    }
+
+
+# 手机号验证码登录
+@app.post("/api/sms/login")
+def sms_login(phone: str = Body(..., embed=True), sms_code: str = Body(..., embed=True), db: Session = Depends(get_db)):
+    if sms_code != "123456":
+        return {"code": 400, "message": "验证码错误，请重新输入（演示版请输入123456）", "data": None}
+
+    return {
+        "code": 200,
+        "message": "登录成功",
+        "data": {
+            "token": f"token_sms_{uuid.uuid4().hex[:8]}",
+            "role": "farmer",
+            "user_id": 2,
+            "username": f"农户_{phone[-4:]}"
+        }
+    }
+
+@app.post("/api/algo/detect")
+async def algo_detect(task_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    #  接收前端传的图片
+    file_bytes = await file.read()
+
+    algo_url = "http://127.0.0.1:8077/algo/predict"
+    files = {'file': (file.filename, file_bytes, file.content_type)}
+
+    try:
+        # 发送请求给算法
+        res = requests.post(algo_url, files=files, timeout=15)
+        algo_data = res.json()
+
+        if algo_data.get("code") != 200:
+            return {"code": 500, "message": "算法服务报错", "data": None}
+
+        disease_cn = algo_data.get("disease_name_cn", "未知")
+        severity = algo_data.get("severity", "unknown")
+        confidence = algo_data.get("confidence", 0.0)
+        boxes = algo_data.get("boxes", [])
+
+        new_record = Detection(
+            task_id=task_id,
+            disease_type=disease_cn,
+            severity=severity,
+            confidence=confidence,
+            bbox_json=json.dumps(boxes)  # 把算法给的坐标列表转成字符串存进去
+        )
+        db.add(new_record)
+
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if task:
+            task.status = "已完成"
+        db.commit()
+        db.refresh(new_record)
+
+        # 返回结果给前端
+        return {
+            "code": 200,
+            "message": "检测成功",
+            "data": {
+                "record_id": new_record.id,
+                "disease_type": disease_cn,
+                "severity": severity,
+                "confidence": confidence,
+                "bbox_list": boxes,
+                "advice": algo_data.get("advice", {}),
+                "need_expert_review": algo_data.get("advice", {}).get("need_expert_review", False)
+            }
+        }
+
+    except Exception as e:
+        print(f"调用算法服务失败: {e}")
+        return {
+            "code": 200, "message": "算法服务超时，已走兜底",
+            "data": {"disease_type": "受胁迫", "severity": "severe", "confidence": 0.5, "bbox_list": [],
+                     "need_expert_review": True}
+        }
