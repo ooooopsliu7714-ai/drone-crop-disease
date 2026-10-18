@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 import os
 import shutil
 import uuid
@@ -22,9 +24,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 数据库连接配置（注意密码）
+# 数据库连接配置（SQLite）
 SQLALCHEMY_DATABASE_URL = "sqlite:///./agri_disease.db"
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -56,6 +58,7 @@ class Detection(Base):
     confidence = Column(Float)
     bbox_json = Column(Text)
     heatmap_url = Column(String(255))
+    heatmap_data = Column(Text)  # 存网格热力图数据
     review_status = Column(String(20), default="AI_PENDING")
 
 
@@ -107,8 +110,7 @@ def create_farmland(name: str, crop: str, area: float, growth_stage: str, db: Se
 @app.get("/api/farmlands")
 def get_farmlands(db: Session = Depends(get_db)):
     farmlands = db.query(Farmland).all()
-    data = [{"id": f.id, "name": f.name, "crop": f.crop, "area": f.area, "growth_stage": f.growth_stage} for f in
-            farmlands]
+    data = [{"id": f.id, "name": f.name, "crop": f.crop, "area": f.area, "growth_stage": f.growth_stage} for f in farmlands]
     return {"code": 200, "message": "success", "data": data}
 
 
@@ -146,10 +148,10 @@ async def upload_image(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, buffer)
 
     return {"code": 200, "message": "上传成功",
-            "data": {"image_id": image_id, "image_url": f"http://127.0.0.1:8000/uploads/{filename}"}}
+            "data": {"image_id": image_id, "image_url": f"http://127.0.0.1:8001/uploads/{filename}"}}
 
 
-# AI检测结果
+# AI手动录入检测结果（备用）
 @app.post("/api/detect/result")
 def save_detect_result(task_id: int, disease_type: str, severity: str, confidence: float, bbox_list: str,
                        heatmap_url: str, db: Session = Depends(get_db)):
@@ -161,24 +163,6 @@ def save_detect_result(task_id: int, disease_type: str, severity: str, confidenc
         task.status = "已完成"
     db.commit()
     return {"code": 200, "message": "检测结果已保存", "data": {"record_id": new_record.id}}
-
-
-@app.get("/api/detect/result/{task_id}")
-def get_detect_result(task_id: int, db: Session = Depends(get_db)):
-    record = db.query(Detection).filter(Detection.task_id == task_id).first()
-    if not record:
-        return {"code": 200, "message": "处理中", "data": {"status": "processing"}}
-    return {
-        "code": 200,
-        "message": "success",
-        "data": {
-            "task_id": record.task_id, "status": "completed",
-            "disease_type": record.disease_type, "severity": record.severity,
-            "confidence": record.confidence, "image_url": record.image_url,
-            "heatmap_url": record.heatmap_url,
-            "bbox_list": json.loads(record.bbox_json) if record.bbox_json else []
-        }
-    }
 
 
 # 病害统计
@@ -198,7 +182,6 @@ def get_statistics(farmland_id: int, db: Session = Depends(get_db)):
             "data": {"total_detected": total_count, "severe_count": severe_count, "incidence_rate": incidence_rate,
                      "disease_index": disease_index}}
 
-
 # 防治建议
 @app.get("/api/suggestions/{task_id}")
 def get_suggestions(task_id: int, db: Session = Depends(get_db)):
@@ -215,7 +198,6 @@ def get_suggestions(task_id: int, db: Session = Depends(get_db)):
     return {"code": 200, "message": "success",
             "data": {"suggestion": kb.suggestion, "pesticide": kb.pesticide_recommendation,
                      "prescription_map_url": record.heatmap_url}}
-
 
 # 专家复核
 @app.post("/api/expert/review")
@@ -234,7 +216,6 @@ def expert_review(record_id: int, corrected_disease: str, corrected_severity: st
     db.commit()
     return {"code": 200, "message": "复核发布成功，已生成通知", "data": None}
 
-
 # 消息通知
 @app.get("/api/notifications")
 def get_notifications(db: Session = Depends(get_db)):
@@ -242,11 +223,9 @@ def get_notifications(db: Session = Depends(get_db)):
     data = [{"id": n.id, "message": n.message, "task_id": n.task_id} for n in notifications]
     return {"code": 200, "message": "success", "data": data}
 
-
-# 用户登录
+# 微信登录
 WECHAT_APPID = "wxcec06bd690fa435f"
 WECHAT_SECRET = "71ba26e79556d84597fbdfcb3af8b393"
-
 
 @app.post("/api/login")
 def login(code: str = Body(..., embed=True), db: Session = Depends(get_db)):
@@ -271,8 +250,6 @@ def login(code: str = Body(..., embed=True), db: Session = Depends(get_db)):
                 "data": {"token": f"token_{uuid.uuid4().hex[:8]}", "openid": "mock_openid",
                          "session_key": "mock_key", "role": "farmer", "username": "东区张老汉"}}
 
-
-# 验证
 # 发送短信验证码
 @app.post("/api/sms/send")
 def send_sms(phone: str = Body(..., embed=True)):
@@ -282,7 +259,6 @@ def send_sms(phone: str = Body(..., embed=True)):
         "message": "验证码已发送（演示模拟，请输入123456）",
         "data": {"sms_code": "123456"}
     }
-
 
 # 手机号验证码登录
 @app.post("/api/sms/login")
@@ -301,61 +277,201 @@ def sms_login(phone: str = Body(..., embed=True), sms_code: str = Body(..., embe
         }
     }
 
-@app.post("/api/algo/detect")
-async def algo_detect(task_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
-    #  接收前端传的图片
-    file_bytes = await file.read()
+# 历史记录列表
+@app.get("/api/history")
+def get_history(db: Session = Depends(get_db)):
+    records = db.query(Detection).order_by(Detection.id.desc()).all()
+    data = []
+    for r in records:
+        data.append({
+            "task_id": r.task_id,
+            "disease_type": r.disease_type,
+            "severity": r.severity,
+            "confidence": r.confidence,
+            "review_status": r.review_status,
+            "image_url": r.image_url
+        })
+    return {"code": 200, "message": "success", "data": data}
 
-    algo_url = "http://127.0.0.1:8077/algo/predict"
+
+# 结果详情（获取热力图数据）
+@app.get("/api/detect/result/{task_id}")
+def get_detect_result(task_id: int, db: Session = Depends(get_db)):
+    record = db.query(Detection).filter(Detection.task_id == task_id).first()
+    if not record:
+        return {"code": 404, "message": "未找到记录", "data": None}
+
+    return {
+        "code": 200,
+        "message": "success",
+        "data": {
+            "task_id": record.task_id,
+            "disease_type": record.disease_type,
+            "severity": record.severity,
+            "confidence": record.confidence,
+            "bbox_list": json.loads(record.bbox_json) if record.bbox_json else [],
+            "heatmap_data": json.loads(record.heatmap_data) if record.heatmap_data else {},  # 返回热力图数据
+            "review_status": record.review_status
+        }
+    }
+
+# 一级：上传航拍图：8002
+@app.post("/api/algo/detect_drone")
+async def algo_detect_drone(task_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    file_bytes = await file.read()
     files = {'file': (file.filename, file_bytes, file.content_type)}
 
     try:
-        # 发送请求给算法
-        res = requests.post(algo_url, files=files, timeout=15)
-        algo_data = res.json()
+        algo_url = "http://192.168.1.215:8002/algo/predict"
+        res = requests.post(algo_url, files=files, timeout=15).json()
 
-        if algo_data.get("code") != 200:
-            return {"code": 500, "message": "算法服务报错", "data": None}
+        if res.get("code") != 200:
+            return {"code": 500, "message": "航拍算法报错", "data": None}
 
-        disease_cn = algo_data.get("disease_name_cn", "未知")
-        severity = algo_data.get("severity", "unknown")
-        confidence = algo_data.get("confidence", 0.0)
-        boxes = algo_data.get("boxes", [])
+        disease_cn = res.get("disease_name_cn", "未知")
+        severity = res.get("severity", "unknown")
+        confidence = res.get("confidence", 0.0)
+        boxes = res.get("boxes", [])
+        advice = res.get("advice", {})
+        statistics = res.get("statistics", {})
 
-        new_record = Detection(
-            task_id=task_id,
-            disease_type=disease_cn,
-            severity=severity,
-            confidence=confidence,
-            bbox_json=json.dumps(boxes)  # 把算法给的坐标列表转成字符串存进去
-        )
+        new_record = Detection(task_id=task_id, disease_type=disease_cn, severity=severity,
+                               confidence=confidence, bbox_json=json.dumps(boxes), heatmap_data=json.dumps(statistics))
         db.add(new_record)
-
         task = db.query(Task).filter(Task.id == task_id).first()
-        if task:
-            task.status = "已完成"
+        if task: task.status = "已完成"
         db.commit()
         db.refresh(new_record)
 
-        # 返回结果给前端
-        return {
-            "code": 200,
-            "message": "检测成功",
-            "data": {
-                "record_id": new_record.id,
-                "disease_type": disease_cn,
-                "severity": severity,
-                "confidence": confidence,
-                "bbox_list": boxes,
-                "advice": algo_data.get("advice", {}),
-                "need_expert_review": algo_data.get("advice", {}).get("need_expert_review", False)
-            }
-        }
+        return {"code": 200, "message": "航拍检测成功", "data": {
+            "record_id": new_record.id, "disease_type": disease_cn, "severity": severity,
+            "confidence": confidence, "bbox_list": boxes, "advice": advice,
+            "need_expert_review": advice.get("need_expert_review", False)
+        }}
+    except Exception as e:
+        print(f"航拍接口挂了，走兜底: {e}")
+        disease_cn = "受胁迫"
+        severity = "severe"
+        confidence = 0.5
+        boxes = []
+        statistics = {}
+
+        new_record = Detection(task_id=task_id, disease_type=disease_cn, severity=severity,
+                               confidence=confidence, bbox_json=json.dumps(boxes), heatmap_data=json.dumps(statistics))
+        db.add(new_record)
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if task: task.status = "已完成"
+        db.commit()
+        db.refresh(new_record)
+
+        return {"code": 200, "message": "算法超时（兜底）",
+                "data": {"record_id": new_record.id, "disease_type": disease_cn, "severity": severity,
+                         "confidence": confidence, "bbox_list": boxes,
+                         "need_expert_review": True}}
+
+
+# 二级：手机上传：8003
+@app.post("/api/algo/detect_phone")
+async def algo_detect_phone(task_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    file_bytes = await file.read()
+    files = {'file': (file.filename, file_bytes, file.content_type)}
+
+    try:
+        algo_url = "http://192.168.1.215:8003/algo/classify"
+        res = requests.post(algo_url, files=files, timeout=15).json()
+
+        if res.get("code") != 200:
+            return {"code": 500, "message": "手机识别算法报错", "data": None}
+
+        disease_cn = res.get("disease_name_cn", "未知")
+        severity = res.get("severity", "unknown")
+        confidence = res.get("confidence", 0.0)
+        boxes = res.get("boxes", [])
+        advice = res.get("advice", {})
+        statistics = res.get("statistics", {})
+
+        new_record = Detection(task_id=task_id, disease_type=disease_cn, severity=severity,
+                               confidence=confidence, bbox_json=json.dumps(boxes), heatmap_data=json.dumps(statistics))
+        db.add(new_record)
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if task: task.status = "已完成"
+        db.commit()
+        db.refresh(new_record)
+
+        return {"code": 200, "message": "手机识别成功", "data": {
+            "record_id": new_record.id, "disease_type": disease_cn, "severity": severity,
+            "confidence": confidence, "bbox_list": boxes, "advice": advice,
+            "need_expert_review": advice.get("need_expert_review", False)
+        }}
+    except Exception as e:
+        print(f"手机接口挂了，走兜底: {e}")
+        disease_cn = "受胁迫"
+        severity = "severe"
+        confidence = 0.5
+        boxes = []
+        statistics = {}
+
+        new_record = Detection(task_id=task_id, disease_type=disease_cn, severity=severity,
+                               confidence=confidence, bbox_json=json.dumps(boxes), heatmap_data=json.dumps(statistics))
+        db.add(new_record)
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if task: task.status = "已完成"
+        db.commit()
+        db.refresh(new_record)
+
+        return {"code": 200, "message": "算法超时（兜底）",
+                "data": {"record_id": new_record.id, "disease_type": disease_cn, "severity": severity,
+                         "confidence": confidence, "bbox_list": boxes,
+                         "need_expert_review": True}}
+
+#通义千问：个性化
+from openai import OpenAI
+from pydantic import BaseModel
+
+client = OpenAI(
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
+    base_url="https://ws-5vbmof6mxst4l92a.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+)
+
+class AdviceRequest(BaseModel):
+    task_id: int
+
+@app.post("/api/chat/advice")
+def get_personalized_advice(request: AdviceRequest, db: Session = Depends(get_db)):
+    record = db.query(Detection).filter(Detection.task_id == request.task_id).first()
+    if not record:
+        return {"code": 404, "message": "未找到检测记录", "data": None}
+
+    disease = record.disease_type
+    severity = record.severity
+    confidence = record.confidence
+
+    prompt = f"""
+    我是一个农民，我的农田刚刚被无人机/手机AI检测系统扫描过了。
+    检测结果显示：
+    - 病害类型：{disease}
+    - 严重程度：{severity}
+    - AI置信度：{confidence}
+
+    请你作为专业的中国农业植保专家，针对上面这个具体的检测结果，给我一段通俗易懂、可操作性强的防治建议。
+    要求：包含立即要做的农事操作、打药建议（不要推荐具体违禁农药），以及后续的预防工作。
+    """
+    try:
+        response = client.chat.completions.create(
+            model="qwen-plus",
+            messages=[
+                {"role": "system", "content": "你是一个专业的中国农业植保专家，请用通俗易懂的中文回答。"},
+                {"role": "user", "content": prompt}
+            ],
+            timeout=15
+        )
+        answer = response.choices[0].message.content
+        return {"code": 200, "message": "success", "data": {"advice": answer}}
 
     except Exception as e:
-        print(f"调用算法服务失败: {e}")
+        print(f"通义千问调用失败: {e}")
         return {
-            "code": 200, "message": "算法服务超时，已走兜底",
-            "data": {"disease_type": "受胁迫", "severity": "severe", "confidence": 0.5, "bbox_list": [],
-                     "need_expert_review": True}
+            "code": 200,
+            "message": "success",
+            "data": {"advice": f"针对您的 {disease} ({severity})，建议立即清除病残体，保持通风，并咨询当地植保站用药。"}
         }
