@@ -1,3 +1,4 @@
+import base64
 from dotenv import load_dotenv
 load_dotenv()
 import os
@@ -52,7 +53,7 @@ class Detection(Base):
     __tablename__ = "detections"
     id = Column(Integer, primary_key=True, index=True)
     task_id = Column(Integer)
-    image_url = Column(String(255))
+    image_url = Column(Text)
     disease_type = Column(String(50))
     severity = Column(String(20))
     confidence = Column(Float)
@@ -277,14 +278,26 @@ def sms_login(phone: str = Body(..., embed=True), sms_code: str = Body(..., embe
         }
     }
 
-# 历史记录列表
+
+# 历史记录
 @app.get("/api/history")
-def get_history(db: Session = Depends(get_db)):
-    records = db.query(Detection).order_by(Detection.id.desc()).all()
+def get_history(farmland_id: int = None, db: Session = Depends(get_db)):
+    if farmland_id is not None:
+        tasks = db.query(Task).filter(Task.farmland_id == farmland_id).all()
+        task_ids = [t.id for t in tasks]
+        records = db.query(Detection).filter(Detection.task_id.in_(task_ids)).order_by(Detection.id.desc()).all()
+    else:
+        records = db.query(Detection).order_by(Detection.id.desc()).all()
+
     data = []
     for r in records:
+        task = db.query(Task).filter(Task.id == r.task_id).first()
+        f_id = task.farmland_id if task else None
+
         data.append({
+            "record_id": r.id,
             "task_id": r.task_id,
+            "farmland_id": f_id,
             "disease_type": r.disease_type,
             "severity": r.severity,
             "confidence": r.confidence,
@@ -293,11 +306,13 @@ def get_history(db: Session = Depends(get_db)):
         })
     return {"code": 200, "message": "success", "data": data}
 
+# 结果详情
+@app.get("/api/detect/result/{id_or_task_id}")
+def get_detect_result(id_or_task_id: int, db: Session = Depends(get_db)):
+    record = db.query(Detection).filter(Detection.task_id == id_or_task_id).first()
+    if not record:
+        record = db.query(Detection).filter(Detection.id == id_or_task_id).first()
 
-# 结果详情（获取热力图数据）
-@app.get("/api/detect/result/{task_id}")
-def get_detect_result(task_id: int, db: Session = Depends(get_db)):
-    record = db.query(Detection).filter(Detection.task_id == task_id).first()
     if not record:
         return {"code": 404, "message": "未找到记录", "data": None}
 
@@ -306,23 +321,33 @@ def get_detect_result(task_id: int, db: Session = Depends(get_db)):
         "message": "success",
         "data": {
             "task_id": record.task_id,
+            "record_id": record.id,
             "disease_type": record.disease_type,
             "severity": record.severity,
             "confidence": record.confidence,
+            "image_url": record.image_url,
             "bbox_list": json.loads(record.bbox_json) if record.bbox_json else [],
-            "heatmap_data": json.loads(record.heatmap_data) if record.heatmap_data else {},  # 返回热力图数据
+            "heatmap_data": json.loads(record.heatmap_data) if record.heatmap_data else {},  # 热力图数据
             "review_status": record.review_status
         }
     }
 
-# 一级：上传航拍图：8002
+# 一级：上传航拍图
 @app.post("/api/algo/detect_drone")
 async def algo_detect_drone(task_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
     file_bytes = await file.read()
+
+    image_id = f"img_{uuid.uuid4().hex[:8]}"
+    file_extension = os.path.splitext(file.filename)[1]
+    filename = f"{image_id}{file_extension}"
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    with open(file_path, "wb") as buffer:
+        buffer.write(file_bytes)
+    image_url = f"https://enduring-unmade-statue.ngrok-free.dev/uploads/{filename}"
     files = {'file': (file.filename, file_bytes, file.content_type)}
 
     try:
-        algo_url = "http://192.168.1.215:8002/algo/predict"
+        algo_url = "http://127.0.0.1:8002/algo/predict"
         res = requests.post(algo_url, files=files, timeout=15).json()
 
         if res.get("code") != 200:
@@ -335,8 +360,15 @@ async def algo_detect_drone(task_id: int, file: UploadFile = File(...), db: Sess
         advice = res.get("advice", {})
         statistics = res.get("statistics", {})
 
-        new_record = Detection(task_id=task_id, disease_type=disease_cn, severity=severity,
-                               confidence=confidence, bbox_json=json.dumps(boxes), heatmap_data=json.dumps(statistics))
+        new_record = Detection(
+            task_id=task_id,
+            image_url=image_url,
+            disease_type=disease_cn,
+            severity=severity,
+            confidence=confidence,
+            bbox_json=json.dumps(boxes),
+            heatmap_data=json.dumps(statistics)
+        )
         db.add(new_record)
         task = db.query(Task).filter(Task.id == task_id).first()
         if task: task.status = "已完成"
@@ -344,40 +376,42 @@ async def algo_detect_drone(task_id: int, file: UploadFile = File(...), db: Sess
         db.refresh(new_record)
 
         return {"code": 200, "message": "航拍检测成功", "data": {
-            "record_id": new_record.id, "disease_type": disease_cn, "severity": severity,
+            "record_id": new_record.id,
+            "image_url": image_url,
+            "disease_type": disease_cn, "severity": severity,
             "confidence": confidence, "bbox_list": boxes, "advice": advice,
             "need_expert_review": advice.get("need_expert_review", False)
         }}
     except Exception as e:
-        print(f"航拍接口挂了，走兜底: {e}")
-        disease_cn = "受胁迫"
-        severity = "severe"
-        confidence = 0.5
-        boxes = []
-        statistics = {}
-
-        new_record = Detection(task_id=task_id, disease_type=disease_cn, severity=severity,
-                               confidence=confidence, bbox_json=json.dumps(boxes), heatmap_data=json.dumps(statistics))
+        print(f"航拍接口挂了: {e}")
+        new_record = Detection(task_id=task_id, image_url=image_url, disease_type="受胁迫", severity="severe",
+                               confidence=0.5, bbox_json=json.dumps([]), heatmap_data=json.dumps({}))
         db.add(new_record)
-        task = db.query(Task).filter(Task.id == task_id).first()
-        if task: task.status = "已完成"
         db.commit()
         db.refresh(new_record)
-
         return {"code": 200, "message": "算法超时（兜底）",
-                "data": {"record_id": new_record.id, "disease_type": disease_cn, "severity": severity,
-                         "confidence": confidence, "bbox_list": boxes,
+                "data": {"record_id": new_record.id, "image_url": image_url, "disease_type": "受胁迫",
+                         "severity": "severe", "confidence": 0.5, "bbox_list": [],
                          "need_expert_review": True}}
 
 
-# 二级：手机上传：8003
+# 二级：手机上传
 @app.post("/api/algo/detect_phone")
 async def algo_detect_phone(task_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
     file_bytes = await file.read()
+
+    # ！先保存图片到本地
+    image_id = f"img_{uuid.uuid4().hex[:8]}"
+    file_extension = os.path.splitext(file.filename)[1]
+    filename = f"{image_id}{file_extension}"
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    with open(file_path, "wb") as buffer:
+        buffer.write(file_bytes)
+        image_url = f"https://enduring-unmade-statue.ngrok-free.dev/uploads/{filename}"
     files = {'file': (file.filename, file_bytes, file.content_type)}
 
     try:
-        algo_url = "http://192.168.1.215:8003/algo/classify"
+        algo_url = "http://127.0.0.1:8003/algo/classify"
         res = requests.post(algo_url, files=files, timeout=15).json()
 
         if res.get("code") != 200:
@@ -390,8 +424,15 @@ async def algo_detect_phone(task_id: int, file: UploadFile = File(...), db: Sess
         advice = res.get("advice", {})
         statistics = res.get("statistics", {})
 
-        new_record = Detection(task_id=task_id, disease_type=disease_cn, severity=severity,
-                               confidence=confidence, bbox_json=json.dumps(boxes), heatmap_data=json.dumps(statistics))
+        new_record = Detection(
+            task_id=task_id,
+            image_url=image_url,
+            disease_type=disease_cn,
+            severity=severity,
+            confidence=confidence,
+            bbox_json=json.dumps(boxes),
+            heatmap_data=json.dumps(statistics)
+        )
         db.add(new_record)
         task = db.query(Task).filter(Task.id == task_id).first()
         if task: task.status = "已完成"
@@ -399,31 +440,23 @@ async def algo_detect_phone(task_id: int, file: UploadFile = File(...), db: Sess
         db.refresh(new_record)
 
         return {"code": 200, "message": "手机识别成功", "data": {
-            "record_id": new_record.id, "disease_type": disease_cn, "severity": severity,
+            "record_id": new_record.id,
+            "image_url": image_url,
+            "disease_type": disease_cn, "severity": severity,
             "confidence": confidence, "bbox_list": boxes, "advice": advice,
             "need_expert_review": advice.get("need_expert_review", False)
         }}
     except Exception as e:
-        print(f"手机接口挂了，走兜底: {e}")
-        disease_cn = "受胁迫"
-        severity = "severe"
-        confidence = 0.5
-        boxes = []
-        statistics = {}
-
-        new_record = Detection(task_id=task_id, disease_type=disease_cn, severity=severity,
-                               confidence=confidence, bbox_json=json.dumps(boxes), heatmap_data=json.dumps(statistics))
+        print(f"手机接口挂了: {e}")
+        new_record = Detection(task_id=task_id, image_url=image_url, disease_type="受胁迫", severity="severe",
+                               confidence=0.5, bbox_json=json.dumps([]), heatmap_data=json.dumps({}))
         db.add(new_record)
-        task = db.query(Task).filter(Task.id == task_id).first()
-        if task: task.status = "已完成"
         db.commit()
         db.refresh(new_record)
-
         return {"code": 200, "message": "算法超时（兜底）",
-                "data": {"record_id": new_record.id, "disease_type": disease_cn, "severity": severity,
-                         "confidence": confidence, "bbox_list": boxes,
+                "data": {"record_id": new_record.id, "image_url": image_url, "disease_type": "受胁迫",
+                         "severity": "severe", "confidence": 0.5, "bbox_list": [],
                          "need_expert_review": True}}
-
 #通义千问：个性化
 from openai import OpenAI
 from pydantic import BaseModel
