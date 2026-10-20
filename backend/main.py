@@ -1,5 +1,6 @@
 import base64
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
 load_dotenv()
 import os
 import shutil
@@ -295,6 +296,7 @@ def get_history(farmland_id: int = None, db: Session = Depends(get_db)):
         f_id = task.farmland_id if task else None
 
         data.append({
+            "id": r.id,  # 很多前端组件默认认 id
             "record_id": r.id,
             "task_id": r.task_id,
             "farmland_id": f_id,
@@ -332,6 +334,7 @@ def get_detect_result(id_or_task_id: int, db: Session = Depends(get_db)):
         }
     }
 
+
 # 一级：上传航拍图
 @app.post("/api/algo/detect_drone")
 async def algo_detect_drone(task_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -343,9 +346,9 @@ async def algo_detect_drone(task_id: int, file: UploadFile = File(...), db: Sess
     file_path = os.path.join(UPLOAD_DIR, filename)
     with open(file_path, "wb") as buffer:
         buffer.write(file_bytes)
-    image_url = f"https://enduring-unmade-statue.ngrok-free.dev/uploads/{filename}"
-    files = {'file': (file.filename, file_bytes, file.content_type)}
 
+    image_url = f"https://4f64cb52.r21.cpolar.top/uploads/{filename}"
+    files = {'file': (file.filename, file_bytes, file.content_type)}
     try:
         algo_url = "http://127.0.0.1:8002/algo/predict"
         res = requests.post(algo_url, files=files, timeout=15).json()
@@ -407,9 +410,10 @@ async def algo_detect_phone(task_id: int, file: UploadFile = File(...), db: Sess
     file_path = os.path.join(UPLOAD_DIR, filename)
     with open(file_path, "wb") as buffer:
         buffer.write(file_bytes)
-        image_url = f"https://enduring-unmade-statue.ngrok-free.dev/uploads/{filename}"
-    files = {'file': (file.filename, file_bytes, file.content_type)}
 
+    image_url = f"https://4f64cb52.r21.cpolar.top/uploads/{filename}"
+
+    files = {'file': (file.filename, file_bytes, file.content_type)}
     try:
         algo_url = "http://127.0.0.1:8003/algo/classify"
         res = requests.post(algo_url, files=files, timeout=15).json()
@@ -460,25 +464,32 @@ async def algo_detect_phone(task_id: int, file: UploadFile = File(...), db: Sess
 #通义千问：个性化
 from openai import OpenAI
 from pydantic import BaseModel
+# ================= 通义千问 个性化诊断建议（异步完美版） =================
+from pydantic import BaseModel
 
-client = OpenAI(
+client = AsyncOpenAI(
     api_key=os.getenv("DASHSCOPE_API_KEY"),
-    base_url="https://ws-5vbmof6mxst4l92a.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    timeout=300.0
 )
+
 
 class AdviceRequest(BaseModel):
     task_id: int
 
+
 @app.post("/api/chat/advice")
-def get_personalized_advice(request: AdviceRequest, db: Session = Depends(get_db)):
+async def get_personalized_advice(request: AdviceRequest, db: Session = Depends(get_db)):
     record = db.query(Detection).filter(Detection.task_id == request.task_id).first()
+    if not record:
+        record = db.query(Detection).filter(Detection.id == request.task_id).first()
+
     if not record:
         return {"code": 404, "message": "未找到检测记录", "data": None}
 
     disease = record.disease_type
     severity = record.severity
     confidence = record.confidence
-
     prompt = f"""
     我是一个农民，我的农田刚刚被无人机/手机AI检测系统扫描过了。
     检测结果显示：
@@ -489,14 +500,14 @@ def get_personalized_advice(request: AdviceRequest, db: Session = Depends(get_db
     请你作为专业的中国农业植保专家，针对上面这个具体的检测结果，给我一段通俗易懂、可操作性强的防治建议。
     要求：包含立即要做的农事操作、打药建议（不要推荐具体违禁农药），以及后续的预防工作。
     """
+
     try:
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model="qwen-plus",
             messages=[
                 {"role": "system", "content": "你是一个专业的中国农业植保专家，请用通俗易懂的中文回答。"},
                 {"role": "user", "content": prompt}
-            ],
-            timeout=15
+            ]
         )
         answer = response.choices[0].message.content
         return {"code": 200, "message": "success", "data": {"advice": answer}}
